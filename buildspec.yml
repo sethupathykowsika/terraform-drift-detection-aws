@@ -1,0 +1,42 @@
+version: 0.2
+
+env:
+  variables:
+    TF_BACKEND_BUCKET: "my-driftdetection"
+    TF_BACKEND_REGION: "us-east-2"
+    S3_PLAN_BUCKET: "my-drift-reports-bucket"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.10
+    commands:
+      - wget https://releases.hashicorp.com/terraform/1.5.0/terraform_1.5.0_linux_amd64.zip
+      - unzip terraform_1.5.0_linux_amd64.zip && mv terraform /usr/local/bin/
+      - pip install boto3 requests
+
+  pre_build:
+    commands:
+      - echo "Setting up backend config"
+      - terraform --version
+      - aws sts get-caller-identity
+
+  build:
+    commands:
+      - terraform init -input=false -backend-config="bucket=$TF_BACKEND_BUCKET" -backend-config="region=$TF_BACKEND_REGION"
+      - |
+        set -o pipefail
+        terraform plan -detailed-exitcode -out=tfplan || echo "PLAN_EXIT=$?" > plan_exit.txt
+      - |
+        # read exit code; 0=no changes, 2=changes
+        if [ -f plan_exit.txt ]; then
+          cat plan_exit.txt
+          PLAN_EXIT=$(cat plan_exit.txt | sed 's/[^0-9]*//g')
+        else
+          PLAN_EXIT=0
+        fi
+      - if [ "$PLAN_EXIT" -eq 2 ]; then terraform show -json tfplan > plan.json; aws s3 cp plan.json s3://$S3_PLAN_BUCKET/$(date +%F_%T)_plan.json; python3 scripts/analyze_drift.py plan.json; fi
+
+artifacts:
+  files:
+    - plan.json
