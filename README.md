@@ -22,10 +22,10 @@ This project is the AWS equivalent of the adapted to use **S3, DynamoDB, Bedrock
 
 ```mermaid
 flowchart TD
-    EB[EventBridge Rule (cron)] --> CB[CodeBuild Job]
-    CB --> TF[Terraform Plan]
-    TF -->|Plan JSON| S3[(S3 Drift Reports)]
-    TF --> PY[analyze_drift.py]
-    PY -->|AI Summary| Bedrock
-    PY -->|Email| SES
-    PY -->|Webhook| Chime
+    EB["EventBridge Rule (cron)"] --> CB["CodeBuild Job"]
+    CB --> TF["Terraform Plan"]
+    TF -->|Plan JSON| S3[("S3 Drift Reports")]
+    TF --> PY["analyze_drift.py"]
+    PY -->|AI Summary| BR["Amazon Bedrock"]
+    PY -->|Email| SES["Amazon SES"]
+    PY -->|Webhook| CH["Amazon Chime"]
