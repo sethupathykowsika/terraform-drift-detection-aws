@@ -1,0 +1,77 @@
+version: 0.2
+
+env:
+  variables:
+    APP_FOLDER: "Terraform_files"
+    BACKEND_CONFIG: "Terraform_files/backend.config"
+    VAR_FILE: "Terraform_files/input.auto.tfvars"
+    PLAN_OUTPUT_FILE: "Terraform_files/tfplan.tfplan"
+    DRIFT_REPORT_FILE: "Driftreport.txt"
+    FILTERED_DRIFT_REPORT_FILE: "Drift_filtered.txt"
+    FAIL_ON_DRIFT: "true"
+  parameter-store:
+    OPENAI_API_KEY: "/drift/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"
+    SMTP_PASSWORD: "/drift/Sethu@7299"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - echo "Installing Terraform..."
+      - TERRAFORM_VERSION=$(curl -s https://checkpoint-api.hashicorp.com/v1/check/terraform | python -c "import sys,json;print(json.load(sys.stdin)['current_version'])")
+      - curl -fsSLo terraform.zip https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+      - unzip -o terraform.zip -d /usr/local/bin
+      - terraform -version
+      - echo "Upgrading pip and installing dependencies..."
+      - python -m pip install --upgrade pip
+      - pip install openai requests boto3
+  pre_build:
+    commands:
+      - echo "Initializing Terraform..."
+      - cd "$CODEBUILD_SRC_DIR/$APP_FOLDER"
+      - terraform init -input=false -backend-config="$CODEBUILD_SRC_DIR/$BACKEND_CONFIG" -upgrade
+  build:
+    commands:
+      - echo "Running Terraform plan to detect drift..."
+      - terraform plan -var-file="$CODEBUILD_SRC_DIR/$VAR_FILE" -refresh-only -no-color -out="$PLAN_OUTPUT_FILE" || true
+      - echo "Generating drift report..."
+      - terraform show -no-color "$PLAN_OUTPUT_FILE" > "$DRIFT_REPORT_FILE" || echo "Plan output missing."
+      - echo "Checking for drift..."
+      - |
+        if grep -q "No changes. Infrastructure is up-to-date." "$DRIFT_REPORT_FILE"; then
+          echo "No drift detected."
+          echo "export DRIFT_DETECTED=false" >> $CODEBUILD_SRC_DIR/drift.env
+        else
+          echo "Drift detected in AWS infrastructure."
+          cat "$DRIFT_REPORT_FILE"
+          echo "export DRIFT_DETECTED=true" >> $CODEBUILD_SRC_DIR/drift.env
+        fi
+      - source $CODEBUILD_SRC_DIR/drift.env || true
+      - echo "DRIFT_DETECTED=$DRIFT_DETECTED"
+      - |
+        if [ "$DRIFT_DETECTED" = "true" ]; then
+          echo "Running AI-based drift analysis..."
+          export APP_FOLDER="$CODEBUILD_SRC_DIR/$APP_FOLDER"
+          export DRIFT_REPORT_FILE="$DRIFT_REPORT_FILE"
+          export FILTERED_DRIFT_REPORT_FILE="$FILTERED_DRIFT_REPORT_FILE"
+          python "$CODEBUILD_SRC_DIR/Modules/drift_analyse_openai.py" || echo "Analysis script skipped."
+        fi
+      - |
+        if [ "$DRIFT_DETECTED" = "true" ]; then
+          echo "Sending drift report via email..."
+          export APP_FOLDER="$CODEBUILD_SRC_DIR/$APP_FOLDER"
+          export FILTERED_DRIFT_REPORT_FILE="$FILTERED_DRIFT_REPORT_FILE"
+          export SMTP_PASSWORD="$SMTP_PASSWORD"
+          python "$CODEBUILD_SRC_DIR/Modules/drift_send_email.py" || echo "Email script skipped."
+        fi
+      - |
+        if [ "$DRIFT_DETECTED" = "true" ] && [ "$FAIL_ON_DRIFT" = "true" ]; then
+          echo "Failing build due to detected drift."
+          exit 2
+        fi
+
+artifacts:
+  files:
+    - "**/Driftreport.txt"
+    - "**/Drift_filtered.txt"
